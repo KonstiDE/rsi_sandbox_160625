@@ -84,11 +84,7 @@ def run():
 
 
 if __name__ == '__main__':
-    a = torch.randn((1, 3, 3))
-    b = torch.randn((1, 3, 3))
-
-    t = torch.cat((a, b), dim=0)
-    print(t.shape)
+    run()
 
 
 

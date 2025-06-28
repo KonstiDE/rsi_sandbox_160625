@@ -1,10 +1,12 @@
-import shutup
-shutup.please()
+import os
+from ray import tune
+from ray import train as raytrain
+from utils.stopper import PatienceStopper
 
 import torch
 import torch.nn as nn
 
-import numpy as np
+import config.config as cfg
 
 import config.config as config
 import statistics as s
@@ -12,7 +14,6 @@ import statistics as s
 import matplotlib.pyplot as plt
 
 from model.rsi_model import RSIModel
-
 from provider.rsi_provider import get_loader
 
 from tqdm import tqdm
@@ -41,7 +42,6 @@ def train(model, loader, optimizer, loss_fn, epoch):
 
     return s.mean(losses)
 
-
 def validate(model, loader, loss_fn, epoch):
     model.eval()
 
@@ -52,22 +52,22 @@ def validate(model, loader, loss_fn, epoch):
     for (data, target) in loop:
         pred = model(data)
 
+        loop.set_postfix_str("Epoch: {}".format(epoch))
+
         loss = loss_fn(pred, target)
         losses.append(loss.item())
-
-        loop.set_postfix_str("Epoch: {}".format(epoch))
 
     return s.mean(losses)
 
 
-def run():
+def run(ray_config):
     model = RSIModel(out_classes=4)
 
     loss_function = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.00001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=ray_config["lr"])
 
-    train_loader = get_loader(config.get_training_path())
-    validation_loader = get_loader(config.get_validation_path())
+    train_loader = get_loader(config.get_training_path(), batch_size=ray_config["batch_size"])
+    validation_loader = get_loader(config.get_validation_path(), batch_size=ray_config["batch_size"])
 
     training_losses = []
     validation_losses = []
@@ -79,41 +79,43 @@ def run():
         training_losses.append(training_loss)
         validation_losses.append(validation_loss)
 
-        print("\n---")
-        print("Losses were:")
-        print("Training: {}".format(training_loss))
-        print("Validation: {}".format(validation_loss))
-        print("---\n")
-
     plt.plot(training_losses)
     plt.plot(validation_losses)
     plt.show()
 
-    torch.save(model.state_dict(), "models/rsi_model_20.pt")
+    torch.save(model.state_dict(), "models/rsi_model_10.pt")
 
-
-def test():
-    saved_state_model = torch.load("models/rsi_model_20.pt")
-    model = RSIModel(out_classes=4)
-    model.load_state_dict(saved_state_model)
-    model.eval()
-
-    test_loader = get_loader(config.get_test_path(), batch_size=1)
-
-    correctly_predicted = 0
-
-    loop = tqdm(test_loader)
-
-    for (data, target) in loop:
-        pred = model(data)
-
-        class_predicted = torch.argmax(pred, dim=1)
-
-        if class_predicted == target.item():
-            correctly_predicted += 1
-
-    print("Accuracy on test set: {}".format(correctly_predicted / len(test_loader.dataset)))
 
 
 if __name__ == '__main__':
-    run()
+    stopper = PatienceStopper(
+        metric="validation_loss",
+        mode="min",
+        patience=5
+    )
+
+    tuner = tune.Tuner(
+        tune.with_resources(
+            tune.with_parameters(run),
+            resources={"cpu": 4},
+        ),
+        tune_config=tune.TuneConfig(
+            metric="validation_loss",
+            mode="min",
+            num_samples=1,
+        ),
+        param_space=cfg.get_ray_config(),
+        run_config=raytrain.RunConfig(
+            stop=stopper,
+            storage_path=os.path.join(cfg.get_ray_result_path(), "ray_results"),
+        ),
+    )
+    results = tuner.fit()
+
+    best_result = results.get_best_result("validation_loss", "min", "all")
+
+    print("Best trial config: {}".format(best_result.config))
+    print("Best trial final validation loss: {}".format(best_result.metrics["validation_loss"]))
+
+
+
