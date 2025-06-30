@@ -3,17 +3,17 @@ from ray import tune
 
 
 config = {
-    "base_path": "/home/caipi/PycharmProjects/rsi_sandbox_160625",
+    "base_path": "B:/projects/PycharmProjects/rsi_sandbox_160625/",
     "training_path": "data/rsi/train",
     "validation_path": "data/rsi/validation",
     "test_path": "data/rsi/test",
     "training_amount_percentage": 0.7,
     "validation_amount_percentage": 0.2,
     "test_amount_percentage": 0.1,
-    "ray_result_path": "/home/caipi/PycharmProjects/rsi_sandbox_160625",
+    "ray_result_path": "B:/projects/PycharmProjects/rsi_sandbox_160625/",
     "ray_config": {
-        "lr": tune.grid_search([1e-03, 1e-04, 1e-05]),
-        "batch_size": tune.grid_search([1, 2, 4, 8, 16])
+        "lr": tune.grid_search([1e-04, 1e-05]),
+        "batch_size": tune.grid_search([4, 8, 16])
     },
 }
 

@@ -1,7 +1,10 @@
 import os
+import tempfile
+
 from ray import tune
 from ray import train as raytrain
 from utils.stopper import PatienceStopper
+from ray.train import Checkpoint
 
 import torch
 import torch.nn as nn
@@ -24,44 +27,61 @@ def train(model, loader, optimizer, loss_fn, epoch):
     model.train()
 
     losses = []
+    accs = []
 
     loop = tqdm(loader)
 
     for (data, target) in loop:
         optimizer.zero_grad()
 
+        data = data.cuda()
+        target = target.cuda()
+
         pred = model(data)
 
         loss = loss_fn(pred, target)
         losses.append(loss.item())
+
+        class_predicted = torch.argmax(pred, dim=1)
+
+        accs.append((class_predicted == target).float().mean().item())
 
         loop.set_postfix_str("Epoch: {}".format(epoch))
 
         loss.backward()
         optimizer.step()
 
-    return s.mean(losses)
+    return s.mean(losses), s.mean(accs)
+
 
 def validate(model, loader, loss_fn, epoch):
     model.eval()
 
     losses = []
+    accs = []
 
     loop = tqdm(loader)
 
     for (data, target) in loop:
+        data = data.cuda()
+        target = target.cuda()
+
         pred = model(data)
+
+        class_predicted = torch.argmax(pred, dim=1)
 
         loop.set_postfix_str("Epoch: {}".format(epoch))
 
         loss = loss_fn(pred, target)
         losses.append(loss.item())
 
-    return s.mean(losses)
+        accs.append((class_predicted == target).float().mean().item())
+
+    return s.mean(losses), s.mean(accs)
 
 
 def run(ray_config):
-    model = RSIModel(out_classes=4)
+    model = RSIModel(out_classes=4).cuda()
 
     loss_function = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=ray_config["lr"])
@@ -69,22 +89,31 @@ def run(ray_config):
     train_loader = get_loader(config.get_training_path(), batch_size=ray_config["batch_size"])
     validation_loader = get_loader(config.get_validation_path(), batch_size=ray_config["batch_size"])
 
-    training_losses = []
-    validation_losses = []
+    for epoch in range(99):
+        training_loss, training_acc = train(model, train_loader, optimizer, loss_function, epoch)
+        validation_loss, validation_acc = validate(model, validation_loader, loss_function, epoch)
 
-    for epoch in range(10):
-        training_loss = train(model, train_loader, optimizer, loss_function, epoch)
-        validation_loss = validate(model, validation_loader, loss_function, epoch)
+        # Ray report
+        checkpoint_data = {
+            "epoch": epoch,
+            "net_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+        }
 
-        training_losses.append(training_loss)
-        validation_losses.append(validation_loss)
+        metrics = {
+            "training_loss": training_loss,
+            "validation_loss": validation_loss,
+            "training_acc": training_acc,
+            "validation_acc": validation_acc
+        }
 
-    plt.plot(training_losses)
-    plt.plot(validation_losses)
-    plt.show()
-
-    torch.save(model.state_dict(), "models/rsi_model_10.pt")
-
+        with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
+            torch.save(
+                checkpoint_data,
+                os.path.join(temp_checkpoint_dir, "model_epoch{}.pt".format(epoch)),
+            )
+            checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
+            raytrain.report(metrics, checkpoint=checkpoint)
 
 
 if __name__ == '__main__':
@@ -97,7 +126,7 @@ if __name__ == '__main__':
     tuner = tune.Tuner(
         tune.with_resources(
             tune.with_parameters(run),
-            resources={"cpu": 4},
+            resources={"cpu": 4, "gpu": 1},
         ),
         tune_config=tune.TuneConfig(
             metric="validation_loss",
@@ -116,6 +145,3 @@ if __name__ == '__main__':
 
     print("Best trial config: {}".format(best_result.config))
     print("Best trial final validation loss: {}".format(best_result.metrics["validation_loss"]))
-
-
-
