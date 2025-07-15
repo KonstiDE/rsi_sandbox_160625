@@ -6,8 +6,8 @@ from ray import tune
 
 config = {
     "base_path": "/home/caipi/PycharmProjects/rsi_sandbox_160625/",
-    "training_path": "data/rsi/train",
-    "validation_path": "data/rsi/validation",
+    "training_path": "data/roads/train",
+    "validation_path": "data/roads/val",
     "test_path": "data/rsi/test",
     "training_amount_percentage": 0.7,
     "validation_amount_percentage": 0.2,
