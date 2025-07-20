@@ -6,6 +6,8 @@ from ray import train as raytrain
 from utils.stopper import PatienceStopper
 from ray.train import Checkpoint
 
+from metrics.mean_errors import mae
+
 import torch
 import torch.nn as nn
 
@@ -17,10 +19,13 @@ import statistics as s
 from model.road_model import UNET
 from provider.road_provider import get_loader
 
+from loss.dice_sb_loss import DiceSBLoss
+
 from tqdm import tqdm
 
+device = "cuda:0"
 
-def train(model, loader, optimizer, loss_fn, epoch):
+def train(model, loader, optimizer, loss_fn, epoch, scaler):
     torch.enable_grad()
     model.train()
 
@@ -32,19 +37,20 @@ def train(model, loader, optimizer, loss_fn, epoch):
     for (data, target) in loop:
         optimizer.zero_grad()
 
-        pred = model(data)
+        data = model(data)
+        data = torch.sigmoid(data)
 
-        loss = loss_fn(pred, target)
+        loss = loss_fn(data, target)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        accs.append(mae(data, target).item())
+
         losses.append(loss.item())
 
-        class_predicted = torch.argmax(pred, dim=1)
-
-        accs.append((class_predicted == target).float().mean().item())
-
         loop.set_postfix_str("Epoch: {}".format(epoch))
-
-        loss.backward()
-        optimizer.step()
 
     return s.mean(losses), s.mean(accs)
 
@@ -58,22 +64,25 @@ def validate(model, loader, loss_fn, epoch):
     loop = tqdm(loader)
 
     for (data, target) in loop:
-        pred = model(data)
+        data = model(data)
+        data = torch.sigmoid(data)
 
-        class_predicted = torch.argmax(pred, dim=1)
+        loss = loss_fn(data, target)
+
+        losses.append(loss.item())
 
         loop.set_postfix_str("Epoch: {}".format(epoch))
 
-        loss = loss_fn(pred, target)
-        losses.append(loss.item())
+        accs.append(mae(data, target).item())
 
-        accs.append((class_predicted == target).float().mean().item())
 
     return s.mean(losses), s.mean(accs)
 
 
 def run(ray_config):
     model = UNET()
+
+    scaler = torch.amp.GradScaler()
 
     loss_function = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=ray_config["lr"])
@@ -82,7 +91,7 @@ def run(ray_config):
     validation_loader = get_loader(config.get_validation_path(), batch_size=ray_config["batch_size"])
 
     for epoch in range(99):
-        training_loss, training_acc = train(model, train_loader, optimizer, loss_function, epoch)
+        training_loss, training_acc = train(model, train_loader, optimizer, loss_function, epoch, scaler)
         validation_loss, validation_acc = validate(model, validation_loader, loss_function, epoch)
 
         # Ray report
@@ -95,8 +104,8 @@ def run(ray_config):
         metrics = {
             "training_loss": training_loss,
             "validation_loss": validation_loss,
-            "training_acc": training_acc,
-            "validation_acc": validation_acc
+            "training_mae": training_acc,
+            "validation_mae": validation_acc
         }
 
         with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
@@ -109,33 +118,33 @@ def run(ray_config):
 
 
 if __name__ == '__main__':
-    run(ray_config={"lr": 1e-04, "batch_size": 1})
+    # run(ray_config={"lr": 1e-04, "batch_size": 1})
 
-    # stopper = PatienceStopper(
-    #     metric="validation_loss",
-    #     mode="min",
-    #     patience=5
-    # )
-    #
-    # tuner = tune.Tuner(
-    #     tune.with_resources(
-    #         tune.with_parameters(run),
-    #         resources={"cpu": 4, "gpu": 1},
-    #     ),
-    #     tune_config=tune.TuneConfig(
-    #         metric="validation_loss",
-    #         mode="min",
-    #         num_samples=1,
-    #     ),
-    #     param_space=cfg.get_ray_config(),
-    #     run_config=raytrain.RunConfig(
-    #         stop=stopper,
-    #         storage_path=os.path.join(cfg.get_ray_result_path(), "ray_results"),
-    #     ),
-    # )
-    # results = tuner.fit()
-    #
-    # best_result = results.get_best_result("validation_loss", "min", "all")
-    #
-    # print("Best trial config: {}".format(best_result.config))
-    # print("Best trial final validation loss: {}".format(best_result.metrics["validation_loss"]))
+    stopper = PatienceStopper(
+        metric="validation_loss",
+        mode="min",
+        patience=5
+    )
+
+    tuner = tune.Tuner(
+        tune.with_resources(
+            tune.with_parameters(run),
+            resources={"cpu": 16, "gpu": 1},
+        ),
+        tune_config=tune.TuneConfig(
+            metric="validation_loss",
+            mode="min",
+            num_samples=1,
+        ),
+        param_space=cfg.get_ray_config(),
+        run_config=raytrain.RunConfig(
+            stop=stopper,
+            storage_path=os.path.join(cfg.get_ray_result_path(), "ray_results"),
+        ),
+    )
+    results = tuner.fit()
+
+    best_result = results.get_best_result("validation_loss", "min", "all")
+
+    print("Best trial config: {}".format(best_result.config))
+    print("Best trial final validation loss: {}".format(best_result.metrics["validation_loss"]))

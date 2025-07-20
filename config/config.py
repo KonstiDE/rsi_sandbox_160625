@@ -42,3 +42,6 @@ def get_ray_result_path():
 
 def get_ray_config():
     return config["ray_config"]
+
+def get_base_path():
+    return config["base_path"]

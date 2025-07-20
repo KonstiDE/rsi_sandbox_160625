@@ -1,4 +1,5 @@
 import os
+
 import torch
 import numpy as np
 
@@ -8,11 +9,6 @@ from torchvision import transforms
 
 from PIL import Image
 
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Resize(512)
-])
-
 class RoadDataset(Dataset):
     def __init__(self, data_dir):
         self.data_dir = data_dir
@@ -21,14 +17,10 @@ class RoadDataset(Dataset):
         self.labels = []
 
         for file in os.listdir(self.data_dir):
-            self.data.append(Image.open(os.path.join(self.data_dir, file)))
-            self.labels.append(Image.open(os.path.join(self.data_dir + "_labels", file[:-1])))
+            array_file = np.load(os.path.join(data_dir, file))
 
-
-        self.data = [np.asarray(i) for i in self.data]
-        self.labels = [np.asarray(i) for i in self.labels]
-        self.data = [transform(e) for e in self.data]
-        self.labels = [transform(e) for e in self.labels]
+            self.data.append(np.transpose(array_file["rgb"], (2, 0, 1)))
+            self.labels.append(np.transpose(array_file["mask"], (2, 0, 1)))
 
 
     def __len__(self):
@@ -38,11 +30,11 @@ class RoadDataset(Dataset):
         data_array = self.data[idx]
         label_array = self.labels[idx]
 
-        return data_array, torch.tensor(label_array)
+        return torch.Tensor(data_array), torch.Tensor(label_array)
 
 
 
 def get_loader(data_dir, batch_size):
     dataset = RoadDataset(data_dir)
 
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=0)
